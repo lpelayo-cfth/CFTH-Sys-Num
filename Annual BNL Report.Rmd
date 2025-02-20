@@ -1,0 +1,671 @@
+---
+title: "Annual BNL Report"
+author: "Laura Pelayo"
+date: "2025-02-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(readxl)
+library(pander)
+library(dplyr)
+library(stringr)
+```
+
+## Annual BNL Report
+
+Runs on BNL v1.1 - Demos and Households
+
+
+```{r Read Data and initial cleaning}
+
+# Set the report year dates
+year_start <- ymd("20240101")
+year_end <- ymd("20241231")
+ 
+# Age function
+age <- function(from, to) {
+  from_lt = as.POSIXlt(from)
+  to_lt = as.POSIXlt(to)
+  age = to_lt$year - from_lt$year
+  ifelse(to_lt$mon < from_lt$mon |
+         (to_lt$mon == from_lt$mon & to_lt$mday < from_lt$mday),
+         age - 1, age)
+}
+ 
+# Set the path to your Excel file
+bnl_data <- "Data/Excel format/FY24 BNL v1.1 - Demos and Households_02.13.25.xlsx"
+ 
+# Read data from Sheet 1
+sheet1_data <- read_excel(bnl_data, sheet = 1)
+# Clean column names by removing extra spaces
+names(sheet1_data) <- gsub(" ", "", names(sheet1_data))
+ 
+# Print unique values for the Gender column from Sheet 1
+print(unique(sheet1_data$Gender))
+ 
+# Print column names for Sheet 1
+print(colnames(sheet1_data))
+ 
+# Read data from Sheet 2 for both tables and remove ',' from Household info
+table1 <- read_excel(bnl_data, sheet = 2, range = "B2:D19437") %>%
+  mutate(`Household Id` = gsub(",", "", `Household Id`))
+table2 <- read_excel(bnl_data, sheet = 2, range = "F2:H4493") %>%
+  mutate(`Entry Exit Household Id` = gsub(",", "", `Entry Exit Household Id`))
+ 
+# Merge table1 and table2 from Sheet 2 on 'Client Uid'
+merged_sheet2_data <- left_join(table1, table2, by = "Client Uid") %>%
+  distinct(`Client Uid`, .keep_all = TRUE) # De-duplicate based on 'Client Uid'
+ 
+# Clean column names by removing extra spaces for merged Sheet 2 data
+names(merged_sheet2_data) <- gsub(" ", "", names(merged_sheet2_data))
+ 
+# Print column names for merged data from Sheet 2
+print(colnames(merged_sheet2_data))
+ 
+# Display the first few rows of the merged data from Sheet 2 as a check
+head(merged_sheet2_data)
+ 
+# Display the first few rows of the Sheet 1 data as a check
+head(sheet1_data)
+
+```
+
+
+
+
+
+
+
+```{r clean bnl}
+ 
+by_name_list <- sheet1_data %>%
+  rename(NewlyHomeless = `...9`,
+         RelationshiptoHoH = `CLIENTDETAILRelationshiptoHoH`) %>%
+  `colnames<-`(gsub(" ", "", names(.))) %>%
+  select(ClientId = "ClientId", DateofBirth = "DateofBirth", Gender = "Gender", CensusRace = "CensusRace", Ethnicity = "Ethnicity", ClientStatus = "ClientStatus", NewlyHomeless = "NewlyHomeless",
+         StatusDate = "StatusDate", `Chronic?` = "Chronic?", `Veteran?` = "Veteran?", `Youth?` = "Youth?", `DV?` = "DV?", PriorZipCode = "PriorZipCode", StatedReasonforHomelessness = "StatedReasonforHomelessness",
+         FirstDateinActivityRange = "FirstDateinActivityRange", LastDateinActivityRange = "LastDateinActivityRange", RelationshiptoHoH = "RelationshiptoHoH") %>%
+  ## keep people who became homeless in the year, are still active, or had their status changed to housed this year
+  filter(NewlyHomeless == "Newly Homeless" |
+           ClientStatus %in% c("Return from Housed", "Active", "Newly Homeless", "Return from Inactive") |
+           (ClientStatus == "Housed" & 
+              StatusDate >= year_start & 
+              StatusDate <= year_end)) %>%
+  mutate(age_at_year_end = age(DateofBirth, year_end),
+         CensusRace = case_when(
+           str_detect(CensusRace, "Hispanic/Latina/e/o") ~ "LatinX",
+           str_detect(CensusRace, ";") ~ "Two or More Races",
+           CensusRace == "#multivalue" ~ "Error Processing",
+           CensusRace %in% c("Client doesn't know", "Client prefers not to answer", "Data not collected") ~ "Not Disclosed",
+           CensusRace == "" ~ "Unknown",
+           TRUE ~ CensusRace
+         ),
+         Gender = case_when(
+           Gender %in% c("Client doesn't know", "Client prefers not to answer", "Data not collected") ~ "Not Disclosed",
+           Gender == "" ~ "Unknown",
+           TRUE ~ Gender
+         ))
+ 
+# Final
+by_name_list_hhs <- merged_sheet2_data %>%
+  rename(ClientId = ClientUid,
+         RelationshiptoHeadofHousehold = HouseholdRelationship)
+
+```
+
+
+
+```{r get household relationship information from BNL with households joined and de-duped}
+
+##  get household relationship information from BNL with households joined and de-duped
+# hh_relationships <- 
+#   read_excel(file.choose(), sheet = 1) %>%
+#   rename(ClientId = ClientUid, HouseholdId = EntryExitHouseholdId)
+
+hh_relationships_cleaned <- 
+  # hh_relationships %>%
+  by_name_list_hhs %>%
+  mutate(RelationshiptoHeadofHousehold = case_when(
+    RelationshiptoHeadofHousehold == "Self (head of household)" ~ "Self", 
+    RelationshiptoHeadofHousehold %in% c("Head of household's child", "non-binary child",
+                                         "daughter", "son", "adult daughter",
+                                         "adult son", "step-son", "step-daughter",
+                                         "son-in-law", "daughter-in-law",
+                                         "child of partner") ~ "Child",
+    RelationshiptoHeadofHousehold %in% c("Head of household's spouse or partner",
+                                         "partner", "husband", "wife") ~ "Partner",
+    RelationshiptoHeadofHousehold %in% c("step-brother", "brother",
+                                         "sister", "step-sister") ~ "Sibling",
+    RelationshiptoHeadofHousehold %in% c("father", "mother", "father-in-law",
+                                         "mother-in-law", "step-father") ~ "Parent",
+    RelationshiptoHeadofHousehold %in% c("granddaughter", "grandson") ~ "Grandchild",
+    RelationshiptoHeadofHousehold %in% c("grandfather", "grandmother") ~ "Grandparent",
+    RelationshiptoHeadofHousehold %in% c("uncle", "niece", "nephew", "other relative", 
+                                         "cousin", "aunt",
+                                         "Head of household's other relation member (other relation to head of household)") ~ "Other Relative",
+    RelationshiptoHeadofHousehold %in% c("other non-relative", "unknown", "friend of family", 
+                                         "Data not collected", "Other: non-relation member") |
+      is.na(RelationshiptoHeadofHousehold) ~ "Unknown",
+    TRUE ~ RelationshiptoHeadofHousehold
+  ))
+
+##  Use this to check for unaccounted-for relationship values
+unique(hh_relationships_cleaned$RelationshiptoHeadofHousehold)
+
+```
+
+
+
+```{r assign each active person to only one household}
+
+##  assign each active person to only one household
+##  if they are in multiple households, assign them to the largest household
+##  identify youth and family households
+# hold <- by_name_list_hhs
+by_name_list_hhs <- 
+  # hold %>%
+  # inner_join(by_name_list %>%
+  #              select(ClientId, age_at_year_end, Gender),
+             # by = "ClientId") %>%
+  by_name_list %>%
+  select(ClientId, age_at_year_end, Gender) %>%
+  filter(ClientId %in% by_name_list$ClientId) %>%
+  # left_join(hh_relationships_cleaned, by = c("ClientId", "HouseholdId")) %>%
+  left_join(hh_relationships_cleaned, by = "ClientId",
+            multiple = "all") %>%
+  group_by(HouseholdId) %>%
+  mutate(household_size = n(),
+         max_household_age = max(age_at_year_end, na.rm = TRUE),
+         min_household_age = min(age_at_year_end, na.rm = TRUE),
+         self_partner_only = min(if_else(RelationshiptoHeadofHousehold %in% c("Self", "Partner"), 1, 0)),
+         has_child = max(if_else(RelationshiptoHeadofHousehold == "Child", 1, 0)),
+         has_parent = max(if_else(RelationshiptoHeadofHousehold == "Parent", 1, 0)),
+         all_hoh = min(if_else(RelationshiptoHeadofHousehold == "Self", 1, 0)),
+         spans_three_gens = max(if_else(RelationshiptoHeadofHousehold %in% c("Grandchild", "Grandparent"), 1, 0)),
+         has_other_family = max(if_else(RelationshiptoHeadofHousehold %in% c("Sibling", "Other Relative"), 1, 0))) %>%
+  ungroup() %>%
+  arrange(desc(household_size)) %>%
+  group_by(ClientId) %>%
+  slice(1L) %>%
+  ungroup() %>%
+  select(-age_at_year_end)
+
+household_types <- by_name_list_hhs %>%
+  mutate(HouseholdType = case_when(
+    min_household_age < 18 ~ "Family With Children",
+    household_size == 1 & 
+      Gender %in% c("Woman (Girl, if child)", "Transgender; Female", "Trans Woman", "Female") ~ "Single Female",
+    household_size == 1 & 
+      Gender %in% c("Man (Boy, if child)", "Transgender; Male", "Trans Man", "Male") ~ "Single Male",
+    household_size == 1 & 
+      Gender %in% c("Client refuses to answer", "Client prefers not to answer", "Data not collected") |
+      is.na(Gender) ~ "Single Person - Gender Unknown",
+    household_size == 1 & 
+      Gender %in% c("Non-Binary", "Culturally Specific Identity (e.g., Two-Spirit)", "Different Identity") ~ "Single Non-Binary Person",
+    self_partner_only == 1 ~ "Couple",
+    min_household_age >= 18 & (has_child == 1 | has_parent == 1 | spans_three_gens == 1) ~ "Household with Adult Child/ren",
+    is.na(min_household_age) & (has_child == 1 | has_parent == 1 | spans_three_gens == 1) ~ "Household with Child/ren, Age Unknown",
+    has_other_family == 1 ~ "Other Familial Relationship",
+    min_household_age >= 18 ~ "Adults Only, Relationship Unknown",
+    TRUE ~ "Cannot Determine"))
+
+check <- household_types %>%
+  filter(HouseholdType == "Cannot Determine") %>%
+  arrange(HouseholdId)
+
+household_types %>% 
+  distinct(HouseholdId, HouseholdType) %>%
+  group_by(HouseholdType) %>%
+  summarise(households = n())
+
+# Get unique gender values
+unique_gender <- unique(by_name_list$Gender)
+print(unique_gender)
+
+```
+
+
+
+
+```{r get unique values for BIPOC}
+
+#Below is the updated code to accommodate for the data standard changes in FY24
+# Get unique census race values
+unique_censusrace <- unique(by_name_list$CensusRace)
+print(unique_censusrace)
+
+# Filter BIPOC individuals based on CensusRace and join with household data to get HouseholdId
+BIPOC_households <- by_name_list %>%
+  filter((str_detect(CensusRace, "Native Hawaiian or Pacific Islander") |
+          str_detect(CensusRace, "Two or More Races") |
+          str_detect(CensusRace, "Black, African American, or African") |
+          str_detect(CensusRace, "American Indian, Alaska Native, or Indigenous") |
+          str_detect(CensusRace, "Asian or Asian American") |
+          str_detect(CensusRace, "Hispanic/Latina/e/o") |
+          str_detect(CensusRace, "Middle Eastern or North African")) &
+         age_at_year_end >= 18) %>%
+  left_join(by_name_list_hhs, by = "ClientId") %>%
+  distinct(HouseholdId)
+ 
+# Count the number of unique BIPOC households
+num_bipoc_households <- nrow(BIPOC_households)
+ 
+# Print the result
+print(num_bipoc_households)
+
+# Filter BIPOC individuals based on CensusRace and join with household data to get HouseholdId
+BIPOC_household_detail_final <- by_name_list %>%
+  filter(str_detect(CensusRace, "Native Hawaiian or Pacific Islander") |
+         str_detect(CensusRace, "Two or More Races") |
+         str_detect(CensusRace, "Black, African American, or African") |
+         str_detect(CensusRace, "American Indian, Alaska Native, or Indigenous") |
+         str_detect(CensusRace, "Asian or Asian American") |
+         str_detect(CensusRace, "LatinX") |
+         str_detect(CensusRace, "Hispanic/Latina/e/o") |
+         str_detect(CensusRace, "Middle Eastern or North African") &
+         age_at_year_end >= 18) %>%
+  left_join(by_name_list_hhs, by = "ClientId") %>%
+  filter(!is.na(HouseholdId)) %>%  # Ensure there are no null values in HouseholdId
+  group_by(CensusRace) %>%  # Group by CensusRace instead of Ethnicity
+  summarise(households = n_distinct(HouseholdId), .groups = 'drop')  # Count unique households
+ 
+# Print the detailed BIPOC household information
+print(BIPOC_household_detail_final)
+
+#bipoc_hh_final = sum(BIPOC_household_detail_final$households, na.rm = TRUE)
+
+```
+
+
+
+
+
+
+
+```{r get system map counts}
+#view(by_name_list_hhs)
+
+total_households <- nrow(distinct(by_name_list_hhs, HouseholdId))
+
+families_with_children <- nrow(distinct(by_name_list_hhs %>%
+                                          filter(min_household_age < 18)
+                                          , HouseholdId))
+
+veterans <- nrow(distinct(by_name_list %>%
+                                          filter(`Veteran?` == "Yes")
+                                        , ClientId))
+
+youth_households <- nrow(distinct(by_name_list_hhs %>%
+                                          filter(max_household_age >= 18 &
+                                                   max_household_age <= 24)
+                                        , HouseholdId))
+
+seniors <- nrow(distinct(by_name_list %>%
+                                          filter(age_at_year_end >= 55)
+                                        , ClientId))
+
+BIPOC_households <- nrow(distinct(by_name_list %>%
+                                    filter((str_detect(CensusRace, "Native Hawaiian or Other Pacific Islander") |
+    str_detect(CensusRace, "Two or More Races") |
+    str_detect(CensusRace, "Black or African American") |
+    str_detect(CensusRace, "American Indian or Alaska Native") |
+    str_detect(CensusRace, "Asian") |
+    str_detect(CensusRace, "LatinX") |
+    str_detect(CensusRace, "Middle Eastern or North African")) &
+                                    age_at_year_end >= 18) %>%
+                                    left_join(by_name_list_hhs, by = "ClientId")
+                          , HouseholdId))
+
+BIPOC_household_detail <- by_name_list %>%
+  filter(str_detect(CensusRace, "Native Hawaiian or Other Pacific Islander") |
+    str_detect(CensusRace, "Two or More Races") |
+    str_detect(CensusRace, "Black or African American") |
+    str_detect(CensusRace, "American Indian or Alaska Native") |
+    str_detect(CensusRace, "Asian") |
+    str_detect(CensusRace, "LatinX") |
+    str_detect(CensusRace, "Middle Eastern or North African") &
+           age_at_year_end >= 18) %>%
+  left_join(by_name_list_hhs, by = "ClientId") %>%
+  # group_by(CensusRace) %>%
+  group_by(Ethnicity) %>%
+  summarise(households = n())
+
+cat("\nTotal households: ", paste0(total_households),
+    "\nFamilies: ", paste0(families_with_children),
+    "\nVeterans: ", paste0(veterans),
+    "\nYouth households: ", paste0(youth_households),
+    "\nSeniors 55+: ", paste0(seniors),
+    "\nBIPOC Households: ", paste0(num_bipoc_households), "\n")
+
+```
+
+
+
+
+
+
+
+```{r get client counts}
+
+all_people <- nrow(distinct(by_name_list, ClientId))
+
+children <- nrow(distinct(by_name_list %>%
+                           filter(age_at_year_end < 18)
+                         , ClientId))
+
+
+# BIPOC <- nrow(distinct(by_name_list %>%
+#   filter(
+#     str_detect(CensusRace, "Native Hawaiian or Other Pacific Islander") |
+#     str_detect(CensusRace, "Two or More Races") |
+#     str_detect(CensusRace, "Black or African American") |
+#     str_detect(CensusRace, "American Indian or Alaska Native") |
+#     str_detect(CensusRace, "Asian") |
+#     str_detect(CensusRace, "Hispanic/Latina/e/o") |
+#     str_detect(CensusRace, "Middle Eastern or North African")
+#   )
+# , ClientId))
+
+#Below is the updated code to accommodate for the data standard changes in FY24
+BIPOC_final <- nrow(distinct(by_name_list %>%
+  filter(str_detect(CensusRace, "Native Hawaiian or Pacific Islander") |
+         str_detect(CensusRace, "Two or More Races") |
+         str_detect(CensusRace, "Black, African American, or African") |
+         str_detect(CensusRace, "American Indian, Alaska Native, or Indigenous") |
+         str_detect(CensusRace, "Asian or Asian American") |
+         str_detect(CensusRace, "LatinX") |
+         str_detect(CensusRace, "Middle Eastern or North African")) %>%
+  distinct(ClientId)))
+
+#Below is the updated code to accommodate for the data standard changes in FY24
+# Step 1: Standardize and split the concatenated values
+by_name_list_cleaned <- by_name_list %>%
+  separate_rows(Gender, sep = ";") %>%
+  mutate(Gender = trimws(Gender))
+ 
+# Step 2: Standardize gender labels
+by_name_list_cleaned <- by_name_list_cleaned %>%
+  mutate(Gender = case_when(
+    Gender %in% c("Woman (Girl, if child)", "Trans Woman", "Female") ~ "Female",
+    Gender %in% c("Man (Boy, if child)", "Trans Man", "Male") ~ "Male",
+    Gender %in% c("Non-Binary", "Different Identity", "Culturally Specific Identity (e.g., Two-Spirit)", "Questioning") ~ "Non-Binary",
+    TRUE ~ Gender # Keep other labels as is
+  ))
+ 
+# Step 3: Count the unique non-male values
+non_male <- nrow(distinct(by_name_list %>%
+                         filter(Gender %in% c("Woman (Girl, if child)", "Non-Binary"))
+                       , ClientId))
+
+
+newly_homeless <- nrow(distinct(by_name_list %>%
+                            filter(!is.na(NewlyHomeless))
+                          , ClientId))
+
+# Filter Latinx individuals based on CensusRace and count unique ClientId
+latinx <- nrow(distinct(by_name_list %>%
+  filter(str_detect(CensusRace, "Hispanic/Latina/e/o")) %>%
+  distinct(ClientId)))
+
+cat("\nAll people: ", paste0(all_people),
+    "\nChildren: ", paste0(children),
+    "\nBIPOC: ", paste0(BIPOC_final),
+    "\nWomen + NB: ", paste0(non_male),
+    "\nNewly Homeless: ", paste0(newly_homeless), "\n",
+    "\nLatinx (for bucket): ", paste0(latinx), "\n")
+
+
+```
+
+
+
+
+
+
+```{r bucket clients by age}
+
+age_table <- by_name_list %>%
+  select(ClientId, age_at_year_end) %>%
+  mutate(age_bucket = case_when(age_at_year_end <= 5 ~ "0 - 5", 
+                                age_at_year_end <= 11 ~ "6 – 11",
+                                age_at_year_end <= 17 ~ "12 – 17",
+                                age_at_year_end <= 24 ~ "18 – 24",
+                                age_at_year_end <= 34 ~ "25 – 34",
+                                age_at_year_end <= 44 ~ "35 – 44",
+                                age_at_year_end <= 54 ~ "45 – 54",
+                                age_at_year_end <= 69 ~ "55 – 69",
+                                age_at_year_end >= 70 ~ "70+", 
+                                TRUE ~ "Unknown"),
+         age_bucket = factor(age_bucket,
+                             levels = 
+                               c("0 - 5", "6 – 11", "12 – 17", "18 – 24", "25 – 34",
+                                 "35 – 44", "45 – 54", "55 – 69", "70+", "Unknown"))) %>%
+group_by(age_bucket) %>%
+summarise(people = n())
+
+```
+
+
+```{r bucket clients by race and eth}
+
+race_table <- by_name_list %>%
+  mutate(CensusRace = case_when(
+    str_detect(CensusRace, "American Indian, Alaska Native, or Indigenous") ~ "American Indian, Alaska Native, or Indigenous",
+    str_detect(CensusRace, "White") & !str_detect(CensusRace, "LatinX") ~ "White, Non-Hispanic",
+    str_detect(CensusRace, "Two or More Races") ~ "Two or More Races",
+    str_detect(CensusRace, "LatinX") ~ "Hispanic/Latino",
+    str_detect(CensusRace, "Not Disclosed") ~ "Not Disclosed",
+    str_detect(CensusRace, "Black, African American, or African") ~ "Black, African American, or African",
+    str_detect(CensusRace, "Native Hawaiian or Pacific Islander") ~ "Native Hawaiian or Pacific Islander",
+    str_detect(CensusRace, "Asian or Asian American") ~ "Asian or Asian American",
+    str_detect(CensusRace, "Middle Eastern or North African") ~ "Middle Eastern or North African",
+    TRUE ~ "Other or Unknown"
+  )) %>%
+  select(ClientId, CensusRace) %>%
+  group_by(CensusRace) %>%
+  summarise(people = n_distinct(ClientId), .groups = 'drop')
+ 
+# Print the result
+print(race_table)
+
+```
+
+
+
+
+```{r bucket clients by gender}
+
+gender_table <- by_name_list %>%
+  # mutate(Gender = factor(Gender,
+  #                            levels = unique(by_name_list$Gender))) %>%
+  group_by(Gender) %>%
+  summarise(people = n())
+
+```
+
+
+```{r addition 2023 questions}
+
+people_in_families <- nrow(distinct(by_name_list_hhs %>%
+                                          filter(min_household_age < 18)
+                                        , ClientId))
+
+newly_homeless_in_families <- nrow(distinct(by_name_list %>%
+                                              left_join(by_name_list_hhs, by = "ClientId") %>%
+                                              filter(min_household_age < 18 &
+                                                       !is.na(NewlyHomeless))
+                                            , ClientId))
+
+families_with_newly_homeless <- nrow(distinct(by_name_list %>%
+                                                left_join(by_name_list_hhs, by = "ClientId") %>%
+                                    filter(min_household_age < 18 &
+                                             !is.na(NewlyHomeless))
+                                  , HouseholdId))
+
+families_with_newly_homeless_adult <- nrow(distinct(by_name_list %>%
+                                                left_join(by_name_list_hhs, by = "ClientId") %>%
+                                                filter(min_household_age < 18 &
+                                                         age_at_year_end >= 18 &
+                                                         !is.na(NewlyHomeless))
+                                              , HouseholdId))
+
+cat("\npeople_in_families: ", paste0(people_in_families),
+    "\nnewly_homeless_in_families: ", paste0(newly_homeless_in_families),
+    "\nfamilies_with_newly_homeless: ", paste0(families_with_newly_homeless),
+    "\nfamilies_with_newly_homeless_adult: ", paste0(families_with_newly_homeless_adult))
+
+```
+
+
+
+```{r view two main datasets}
+
+head(by_name_list_cleaned)
+
+```
+
+
+```{r Zip Code Analysis}
+
+# Set the path to master zipcode file from USPS
+master_zip <- "Data/Excel format/ZIP_Locale_Detail.xls"
+ 
+# Read data from Sheet 1
+zip_code_data <- read_excel(master_zip, sheet = 1)
+ 
+# Define column names
+zip_code_column <- "DELIVERY ZIPCODE"
+state_column <- "PHYSICAL STATE"
+ 
+# Ensure unique zip codes in zip_code_data dataframe
+zip_code_data_unique <- zip_code_data %>%
+  select(!!sym(zip_code_column), !!sym(state_column)) %>%
+  distinct()
+ 
+# Merge BNL data with zip_code_data_unique
+BNL_zip_code_counts <- by_name_list %>%
+  distinct(ClientId, .keep_all = TRUE) %>%
+  left_join(zip_code_data_unique, by = c("PriorZipCode" = zip_code_column)) %>%
+  mutate(
+    State = ifelse(is.na(!!sym(state_column)), "Not Valid", !!sym(state_column)),
+    PriorZipCode = ifelse(is.na(PriorZipCode) | PriorZipCode == "", "Unknown", PriorZipCode)
+  ) %>%
+  group_by(PriorZipCode, State, StatedReasonforHomelessness) %>%  # Retain all three columns
+  summarise(people_count = n(), .groups = "drop")
+ 
+```
+
+
+
+```{r State Analysis}
+
+# Group by state and count total homeless people per state
+state_homeless_summary <- BNL_zip_code_counts %>%
+  group_by(State) %>%
+  summarise(people_count = sum(people_count, na.rm = TRUE)) %>%
+  ungroup() %>%
+  arrange(desc(people_count))
+ 
+# Separate the top 24 states
+top_24_states <- state_homeless_summary %>%
+  slice_head(n = 24)
+ 
+# Group remaining states as "Other States"
+other_states <- state_homeless_summary %>%
+  slice(-c(1:24)) %>%
+  summarise(State = "Other States", people_count = sum(people_count, na.rm = TRUE))
+ 
+# Combine the top 24 states with "Other States"
+final_state_summary <- bind_rows(top_24_states, other_states)
+ 
+# Print the result
+print(final_state_summary)
+ 
+# Print the result
+print(state_homeless_summary)
+
+```
+
+
+```{r Clark County Analysis}
+
+# Define Clark County ZIP codes
+clark_county_zip_codes <- c(
+  "98601", "98604", "98606", "98607", "98629", "98642", 
+  "98660", "98661", "98662", "98663", "98664", "98665",  
+  "98682", "98683", "98684", "98685", "98686", "98671", 
+  "98674", "98675"
+)
+ 
+# Filter for Clark County ZIP codes
+clark_county_summary <- BNL_zip_code_counts %>%
+  filter(PriorZipCode %in% clark_county_zip_codes) %>%
+  group_by(PriorZipCode) %>%
+  summarise(people_count = sum(people_count, na.rm = TRUE)) %>%
+  ungroup()
+ 
+# Calculate the total across all Clark County ZIP codes
+total_clark_county_people <- sum(clark_county_summary$people_count, na.rm = TRUE)
+ 
+# Add a row for the total
+clark_county_summary <- bind_rows(
+  clark_county_summary,
+  tibble(PriorZipCode = "Total", people_count = total_clark_county_people)
+)
+ 
+# Print the results
+print(clark_county_summary)
+
+```
+
+
+```{r PRIMARY REASON ANALYSIS}
+
+# Filter for Clark County ZIP codes and group by reason
+clark_county_reasons <- BNL_zip_code_counts %>%
+  filter(PriorZipCode %in% clark_county_zip_codes) %>%
+  group_by(StatedReasonforHomelessness) %>%
+  summarise(people_count = sum(people_count, na.rm = TRUE)) %>%
+  ungroup()
+ 
+# Calculate total people in Clark County for percentage calculation
+total_clark_county_people <- sum(clark_county_reasons$people_count, na.rm = TRUE)
+ 
+# Add percentage column and sort in descending order
+clark_county_reasons <- clark_county_reasons %>%
+  mutate(percentage = round((people_count / total_clark_county_people) * 100, 2)) %>%
+  arrange(desc(people_count))  # Sort from largest to smallest
+ 
+# Print result
+print(clark_county_reasons)
+
+```
+
+
+```{r PORTLAND Analysis}
+
+portland_zip_codes <- c(
+  "97201", "97202", "97203", "97204", "97205", "97206", "97207", "97208", 
+  "97209", "97210", "97211", "97212", "97213", "97214", "97215", "97216", 
+  "97217", "97218", "97219", "97220", "97221", "97222", "97223", "97224", 
+  "97225", "97227", "97228", "97229", "97230", "97231", "97232", "97233", 
+  "97236", "97238", "97239", "97240", "97242", "97258", "97266", "97267", 
+  "97268", "97269", "97280", "97281", "97282", "97283", "97286", "97290", 
+  "97291", "97292", "97293", "97294", "97296", "97298", "97299"
+)
+
+# Filter for Portland ZIP codes and sum people count
+total_portland_people <- BNL_zip_code_counts %>%
+  filter(PriorZipCode %in% portland_zip_codes) %>%
+  summarise(total_people = sum(people_count, na.rm = TRUE)) %>%
+  pull(total_people)
+ 
+# Print result
+print(total_portland_people)
+
+```
+

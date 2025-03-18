@@ -195,34 +195,15 @@ housing_program_types <- housing_program_entries %>%
   group_by(EntryExitProviderProgramTypeCode) %>%
   summarise(programs = n())
 
+# Count unique EntryExitProviderId after applying filters for "† X PREVENTION PROGRAMS EXITED HOUSEHOLDS TO HOUSING."
+unique_provider_count <- ee_during_period %>%
+  filter(EntryExitProviderProgramTypeCode == "Homelessness Prevention (HUD)" &
+         ExitDestinationType == "Permanent Situation" &
+         EntryExitExitDate >= year_start &
+         EntryExitExitDate <= year_end) %>%
+  summarise(unique_count = n_distinct(EntryExitProviderId)) %>%
+  pull(unique_count)
+ 
+print(unique_provider_count)
+
 ```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
